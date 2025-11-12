@@ -1,24 +1,39 @@
 // pages/index.js
 import { useEffect, useState, useMemo } from "react";
-import useSWR from "swr";
+import useSWR, { mutate as globalMutate } from "swr";
 
-const fetcher = (url) => fetch(url).then((res) => res.json());
+const fetcher = (url) => fetch(url).then((r) => r.json());
 
+// --- FULL SUBJECT LIST (28 subjects from your screenshots) ---
 const SUBJECTS = [
   { id: "path_theory", name: "PATHOLOGY/THEORY" },
-  { id: "comm_clinic", name: "COMMUNITY MEDICINE/CLINICAL PRACTICE" },
-  { id: "pharm_theory", name: "PHARMACOLOGY/THEORY" },
-  { id: "pharm_prac", name: "PHARMACOLOGY/PRACTICAL" },
+  { id: "path_practical", name: "PATHOLOGY/PRACTICAL" },
   { id: "micro_theory", name: "MICROBIOLOGY/THEORY" },
-  { id: "path_prac", name: "PATHOLOGY/PRACTICAL" },
-  { id: "micro_prac", name: "MICROBIOLOGY/PRACTICAL" },
+  { id: "micro_practical", name: "MICROBIOLOGY/PRACTICAL" },
+  { id: "pharm_theory", name: "PHARMACOLOGY/THEORY" },
+  { id: "pharm_practical", name: "PHARMACOLOGY/PRACTICAL" },
+  { id: "comm_theory", name: "COMMUNITY MEDICINE/THEORY" },
+  { id: "comm_clinicalposting", name: "COMMUNITY MEDICINE/CLINICALPOSTING" },
+  { id: "comm_prac_a", name: "COMMUNITY MEDICINE/PRACTICAL-A" },
+  { id: "comm_prac_b", name: "COMMUNITY MEDICINE/PRACTICAL-B" },
+  { id: "comm_fap", name: "COMMUNITY MEDICINE/FAP" },
+  { id: "gen_surg", name: "GENERAL SURGERY/CLINIC" },
+  { id: "gen_med_theory", name: "GENERAL MEDICINE/THEORY" },
+  { id: "gen_med_clinic", name: "GENERAL MEDICINE/CLINIC" },
+  { id: "forens_theory", name: "FORENSIC MEDICINE/THEORY" },
+  { id: "forens_prac", name: "FORENSIC MEDICINE/PRACTICAL" },
+  { id: "forens_prac_b", name: "FORENSIC MEDICINE/PRACTICAL-B" },
+  { id: "derm_theory", name: "DERMATOLOGY/THEORY" },
+  { id: "psych_theory", name: "PSYCHIATRY/THEORY" },
+  { id: "obg_clinic", name: "OBG/CLINIC" },
+  { id: "ent_theory", name: "ENT Theory" },
+  { id: "ent_clinic", name: "ENT/CLINIC" },
+  { id: "pulmo_theory", name: "PULMONARY MEDICINE/THEORY" },
   { id: "pedi_clin", name: "PAEDIATRIC/CLINICAL" },
   { id: "dent_clinic", name: "DENTAL/CLINIC" },
-  { id: "obg_clinic", name: "OBG/CLINIC" },
-  { id: "gen_surg", name: "GENERAL SURGERY/CLINIC" },
-  { id: "comm_theory", name: "COMMUNITY MEDICINE/THEORY" },
-  { id: "gen_med", name: "GENERAL MEDICINE/CLINIC" },
-  { id: "forens_prac", name: "FORENSIC MEDICINE/PRACTICAL" },
+  { id: "skill_lab", name: "Skill Lab" },
+  { id: "anaesthesia_clinical", name: "ANAESTHESIA/CLINIKAL" },
+  { id: "radio_theory", name: "RADIOLOGY/THEORY" },
 ];
 
 function monthToString(ym) {
@@ -38,7 +53,13 @@ export default function Home() {
   const [theme, setTheme] = useState("light");
   const [selectedSubject, setSelectedSubject] = useState(null);
   const [calendarOpen, setCalendarOpen] = useState(false);
-  const { data: records, mutate } = useSWR(`/api/attendance?month=${month}`, fetcher);
+
+  // fetch monthly records (for calendar) and all records (for cumulative totals)
+  const { data: monthRecords, mutate: mutateMonth } = useSWR(
+    `/api/attendance?month=${month}`,
+    fetcher
+  );
+  const { data: allRecords, mutate: mutateAll } = useSWR("/api/attendance", fetcher);
 
   // theme persistence
   useEffect(() => {
@@ -50,15 +71,17 @@ export default function Home() {
     localStorage.setItem("theme", theme);
   }, [theme]);
 
-  // utility: calculate stats for subject (month)
-  function calc(subjectId) {
-    if (!records) return { total: 0, present: 0, percent: 0 };
-    const list = records.filter((r) => r.subjectId === subjectId);
+  // utility: calculate cumulative stats for subject from allRecords
+  function calcCumulative(subjectId) {
+    if (!allRecords) return { total: 0, present: 0, absent: 0, percent: 0 };
+    const list = allRecords.filter((r) => r.subjectId === subjectId);
     const total = list.length;
     const present = list.filter((r) => r.status === "present").length;
+    const absent = list.filter((r) => r.status === "absent").length;
     return {
       total,
       present,
+      absent,
       percent: total ? Math.round((present / total) * 100) : 0,
     };
   }
@@ -71,19 +94,18 @@ export default function Home() {
 
   // month navigation
   function changeMonth(offset) {
-    // parse current
     const [y, m] = month.split("-").map(Number);
     const d = new Date(y, m - 1 + offset, 1);
     setMonth(d.toISOString().slice(0, 7));
   }
 
-  // open calendar for subject
+  // open calendar for subject (month-specific)
   function openCalendar(s) {
     setSelectedSubject(s);
     setCalendarOpen(true);
   }
 
-  // marking for current date (quick)
+  // quick mark: mark today's attendance for a subject
   async function markToday(subject, status) {
     const date = new Date().toISOString().slice(0, 10);
     await fetch("/api/attendance", {
@@ -96,10 +118,12 @@ export default function Home() {
         status,
       }),
     });
-    mutate();
+    // refresh both datasets
+    globalMutate(`/api/attendance?month=${month}`);
+    globalMutate("/api/attendance");
   }
 
-  // mark arbitrary date
+  // mark arbitrary date (calendar)
   async function markDate(subject, date, status) {
     await fetch("/api/attendance", {
       method: "POST",
@@ -111,10 +135,11 @@ export default function Home() {
         status,
       }),
     });
-    await mutate();
+    globalMutate(`/api/attendance?month=${month}`);
+    globalMutate("/api/attendance");
   }
 
-  // calendar data memoization
+  // calendar generation
   const calendarData = useMemo(() => {
     const [y, m] = month.split("-").map(Number);
     const year = y;
@@ -128,13 +153,13 @@ export default function Home() {
     return arr;
   }, [month]);
 
-  // helper to get status for a subject & date
   function getStatusFor(subjectId, dateStr) {
-    if (!records) return null;
-    const rec = records.find((r) => r.subjectId === subjectId && r.date === dateStr);
+    if (!monthRecords) return null;
+    const rec = monthRecords.find((r) => r.subjectId === subjectId && r.date === dateStr);
     return rec ? rec.status : null;
   }
 
+  // handy: when modal opens ensure monthRecords loaded (SWR will do it)
   if (!passwordOk)
     return (
       <div className="h-screen flex flex-col items-center justify-center bg-gray-50 dark:bg-gray-900">
@@ -150,7 +175,7 @@ export default function Home() {
       <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold">College Attendance</h1>
-          <p className="text-sm text-gray-600 dark:text-gray-300">Mark daily attendance and view monthly calendar</p>
+          <p className="text-sm text-gray-600 dark:text-gray-300">Tap a subject to open month calendar — mark Present / Absent / Abandoned</p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -176,47 +201,55 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {/* Dashboard grid */}
+      <main className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         {SUBJECTS.map((s) => {
-          const stats = calc(s.id);
+          const st = calcCumulative(s.id);
+          // color logic for percent box
+          const percentColor =
+            st.percent >= 75 ? "bg-green-600" : st.percent >= 60 ? "bg-yellow-500" : "bg-red-600";
+
           return (
-            <div key={s.id} className="p-4 bg-white dark:bg-gray-800 rounded shadow">
+            <div key={s.id} className="bg-white dark:bg-gray-800 rounded-lg shadow p-4">
               <div className="flex justify-between items-start">
                 <div>
                   <h2 className="font-semibold mb-1">{s.name}</h2>
-                  <p className="text-sm text-gray-500 dark:text-gray-300">
-                    {stats.present}/{stats.total} — {stats.percent}%
-                  </p>
+                  <div className="border-t border-dashed border-gray-200 dark:border-gray-700 mt-2 pt-3" />
+                  <div className="flex items-center gap-6 mt-3">
+                    <div>
+                      <div className="text-xs text-gray-500">Attendance</div>
+                      <div className="text-xl font-medium mt-1">{st.total}</div>
+                    </div>
+
+                    <div>
+                      <div className="text-xs text-gray-500">Present</div>
+                      <div className="text-xl font-medium mt-1 flex items-center gap-2">
+                        {st.present}
+                        <span className="px-2 py-1 bg-green-50 text-green-700 rounded text-sm">P</span>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="text-xs text-gray-500">Absent</div>
+                      <div className="text-xl font-medium mt-1 flex items-center gap-2">
+                        {st.absent}
+                        <span className="px-2 py-1 bg-red-50 text-red-700 rounded text-sm">A</span>
+                      </div>
+                    </div>
+                  </div>
                 </div>
+
                 <div className="flex flex-col items-end gap-2">
-                  <button
-                    onClick={() => openCalendar(s)}
-                    className="text-xs px-2 py-1 bg-indigo-500 text-white rounded"
-                  >
-                    Open Calendar
-                  </button>
-                  <div className="flex gap-1">
-                    <button
-                      onClick={() => markToday(s, "present")}
-                      className="text-xs px-2 py-1 bg-green-500 text-white rounded"
-                      title="Mark Today Present"
-                    >
-                      ✅
-                    </button>
-                    <button
-                      onClick={() => markToday(s, "absent")}
-                      className="text-xs px-2 py-1 bg-red-500 text-white rounded"
-                      title="Mark Today Absent"
-                    >
-                      ❌
-                    </button>
-                    <button
-                      onClick={() => markToday(s, "abandoned")}
-                      className="text-xs px-2 py-1 bg-yellow-500 text-white rounded"
-                      title="Mark Today Abandoned"
-                    >
-                      ⚠️
-                    </button>
+                  <div className={`w-20 h-20 rounded-lg flex items-center justify-center text-white text-xl font-bold ${percentColor}`}>
+                    {st.percent}%
+                  </div>
+                  <div className="flex flex-col gap-2">
+                    <button onClick={() => openCalendar(s)} className="px-3 py-1 bg-indigo-600 text-white rounded text-sm">Open Calendar</button>
+                    <div className="flex gap-1">
+                      <button onClick={() => markToday(s, "present")} className="px-2 py-1 bg-green-500 text-white rounded text-sm">✅</button>
+                      <button onClick={() => markToday(s, "absent")} className="px-2 py-1 bg-red-500 text-white rounded text-sm">❌</button>
+                      <button onClick={() => markToday(s, "abandoned")} className="px-2 py-1 bg-yellow-500 text-white rounded text-sm">⚠️</button>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -229,7 +262,7 @@ export default function Home() {
       {calendarOpen && selectedSubject && (
         <div className="fixed inset-0 z-50 flex items-start justify-center p-6">
           <div className="absolute inset-0 bg-black/40" onClick={() => setCalendarOpen(false)} />
-          <div className="relative bg-white dark:bg-gray-800 rounded-lg shadow-lg w-full max-w-4xl p-4 z-50">
+          <div className="relative bg-white dark:bg-gray-800 rounded-lg shadow-lg w-full max-w-5xl p-4 z-50">
             <div className="flex justify-between items-center mb-3">
               <div>
                 <h3 className="text-lg font-semibold">{selectedSubject.name} — {monthToString(month)}</h3>
@@ -241,26 +274,21 @@ export default function Home() {
             </div>
 
             <div className="grid grid-cols-7 gap-2 text-sm">
-              {/* Weekday headers */}
-              {["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((wd) => (
+              {["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(wd => (
                 <div key={wd} className="text-center font-medium text-xs text-gray-500 dark:text-gray-400">{wd}</div>
               ))}
 
-              {/* generate padding for first day */}
               {(() => {
                 const [y, m] = month.split("-").map(Number);
                 const firstDay = new Date(y, m - 1, 1).getDay();
-                const blanks = Array.from({ length: firstDay }).map((_, i) => <div key={"b"+i} />);
-                return blanks;
+                return Array.from({ length: firstDay }).map((_, i) => <div key={"b"+i} />);
               })()}
 
-              {/* days */}
               {calendarData.map(({ day, dateStr }) => {
                 const status = getStatusFor(selectedSubject.id, dateStr);
                 const isToday = dateStr === new Date().toISOString().slice(0, 10);
                 return (
                   <div key={dateStr} className={`p-2 rounded border border-transparent hover:border-gray-300 dark:hover:border-gray-600 cursor-pointer ${isToday ? "ring-2 ring-indigo-300" : ""}`} onClick={() => {
-                    // small prompt to choose
                     const choice = prompt(`Mark ${dateStr} as (present / absent / abandoned). Leave empty to cancel.`);
                     if (!choice) return;
                     const c = choice.trim().toLowerCase();
@@ -286,7 +314,6 @@ export default function Home() {
 
             <div className="mt-4 flex justify-end gap-2">
               <button onClick={() => {
-                // quick fill helpers
                 if (!confirm("Mark all days without records as 'absent' for this subject?")) return;
                 (async () => {
                   for (const { dateStr } of calendarData) {
@@ -300,7 +327,6 @@ export default function Home() {
               }} className="px-3 py-1 bg-red-500 text-white rounded text-sm">Fill empties as Absent</button>
 
               <button onClick={() => {
-                // export CSV for this subject-month
                 const csvRows = [["date","status"]];
                 for (const { dateStr } of calendarData) {
                   const s = getStatusFor(selectedSubject.id, dateStr) || "";
@@ -321,4 +347,4 @@ export default function Home() {
       )}
     </div>
   );
-    }
+}
